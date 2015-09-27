@@ -1,0 +1,176 @@
+---
+title: "Exercise Manner Prediction Report"
+author: "Hawk Wang"
+date: "Sep 27, 2015"
+output: html_document
+---
+
+# Introduction
+
+This is report for Coursera course Practical Machine Learning project assignment. The purpose of the 
+project is to predict personal exercise manner according to the prepared training data and testing data.  More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+The training data for this project are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+# Conclusion
+
+According to below precedures we use common sense and some statistical method to remove unnecessary predictors and train a model using random forest. The final in sample error rate is 0.41%, and the out sample error rate on the testing data is about 0.53%, which is an acceptable result. The predicted exercise manner is:
+
+B A B A A E D B A A B C B A E E A B B B
+
+# Exploratory Data Analysis
+
+Before we use machine learning algorithm to do the model training and prediction, we do some
+exploratory data analysis here.
+
+First we use following code to check the classe variable values distribution of the training data.
+
+```{r}
+training<-read.csv('pml-training.csv')
+testing<-read.csv('pml-testing.csv')
+dim(training)
+dim(testing)
+```
+```{r eval=FALSE}
+names(training)
+table(training$classe)
+```
+
+The output of above code is omit here. But we can see the classe distribution is quit balance between different exercise manners. And there are many variables with prefix as "max, min, avg, std, var, amplitude"
+
+# Predictor Selection
+
+According to the original paper  Qualitative Activity Recognition of Weight Lifting Exercises refered on http://groupware.les.inf.puc-rio.br/har, these variables are the aggregate value for different time windows. To be specify, they are meaningful only for the training data that the new_window variable is one. However, if we check the new_window data in testing data, we know that all the values are zero. So we know these variables are not related to the testing data that we will remove them from the predictors.
+
+At the same time, if we check the names of the training data we will notice the first 7 variables:
+
+* X: data index
+
+* user_name: User name of the excise experiment
+
+* raw_timestamp_part_1 : time stamp
+
+* raw_timestamp_part_2 : time stamp
+
+* cvtd_timestamp: time string
+
+* new_window: mark the new time window
+
+* num_window: time window index
+
+It's common sense that if we build a model to do prediction, we want the model to be general that is not related to dedicate person, specific time, and the data index. So we also remove these variables.
+
+```{r}
+n<-names(training)
+c1<-grep(pattern="max.*",n)
+c2<-grep(pattern="min.*",n)
+c3<-grep(pattern="var.*",n)
+c4<-grep(pattern="std.*",n)
+c5<-grep(pattern="avg.*",n)
+c6<-grep(pattern="amplitude.*",n)
+
+training2<-training[,-c(1:7, c1,c2,c3,c4,c5,c6)]
+testing2<-testing[,-c(1:7, c1,c2,c3,c4,c5,c6)]
+```
+
+There may be some near zero variables that I want to remove as following code shows:
+
+```{r warning=FALSE, message=FALSE}
+# load the library
+set.seed(7)
+library(caret)
+library(doMC)
+registerDoMC(cores = 8)
+```
+
+```{r}
+#find nzv features and remove them
+nzvs<-nearZeroVar(training2,saveMetrics=F)
+training2<-training2[,-nzvs]
+testing2<-testing2[,-nzvs]
+```
+
+To make a good model, we need to remove variables that are very relative to each other. We would use
+the functions in Caret package findCorrelation to do this task. This function has a parameter cutoff that will impact what variables we will remove. We will treat this parameter as a tuning parameter when train the model. The procedure is:
+
+1. Seperate the training2 data to training3 data and validation data "validating3"
+2. Choose a cutoff value
+3. Compute the correlations of each value, and remove variables according to cutoff value
+4. Use the selected variables to train a model on training3
+5. Predict and validate the accuracy on validating3
+6. Choose the best accurate cutoff value
+
+The following is the code, note: we use random forest algorithm when train the model.
+
+```{r eval=FALSE}
+goodcvalue<-0.6
+accuracy<-0
+for (cvalue in c(0.6,0.7,0.8,0.9))
+{
+  sprintf("cvalue=%f",cvalue)
+  inTrain<-createDataPartition(training2$classe, p = 0.6, list=F)
+  training3<-training2[inTrain,]
+  validating3<-training2[-inTrain,]
+  
+  # calculate correlation matrix
+  correlationMatrix <- cor(training3[,1:52])
+  highlyCorrelated <-findCorrelation(correlationMatrix, cutoff = cvalue)
+  training3 <- training3[,-highlyCorrelated]
+  validating3 <- validating3[,-highlyCorrelated]
+  
+  #Now begin to train the model
+  model<-train(classe ~ ., data=training3, method='rf', 
+               preProcess=c("center","scale"),
+               trControl=trainControl(method="cv"))
+  
+  pvalue<-predict(model, validating3)
+  oknum<-nrow(validating3[(validating3$classe==pvalue),])
+  if (oknum>accuracy)
+  {
+    accuracy<-oknum
+    goodcvalue<-cvalue
+  }
+}
+
+print(goodcvalue)
+```
+
+Running above code we will get a good cutoff value 0.9. We will use this value to train the model based on training2. Here we set the train control parameter so that we use 10 fold mechinism to resample the data to do cross validation.
+
+# Model Training and Prediction
+
+```{r eval=T, cache=TRUE}
+# calculate correlation matrix
+goodcvalue<-0.9
+correlationMatrix <- cor(training2[,1:52])
+highlyCorrelated <-findCorrelation(correlationMatrix, cutoff = goodcvalue)
+
+training3 <- training2[,-highlyCorrelated]
+testing3 <- testing2[,-highlyCorrelated]
+
+# Now begin to train the model
+model<-train(classe ~ ., data=training3, method='rf', 
+             preProcess=c("center","scale"),
+             trControl=trainControl(method="cv"))
+```
+
+```{r, cache=TRUE}
+print(model$finalModel)
+
+pvalue<-predict(model, testing3)
+```
+
+According to above code we know the in sample error rate is 0.41%. Normally the out sample error rate
+will be larger than this value.
+
+And according to above code, we will finally predict the exercise manner of the testing data will be:
+
+`r pvalue`
+
+I've already submit these values to the Course project page, and I got 19 corret and 1 incorrect response, the out sample error rate is `r 1/19.0`, which is a little bit larger than 0.41%, as I estimated above.
